@@ -42,11 +42,17 @@ namespace ValidationTool
             _tfsStore = _tfsServer.GetService<WorkItemStore>();
 
             var runDateTime = DateTime.Now.ToString("yyyy-MM-dd-HHmmss");
-            var dirName = string.Format("{0}\\Log-{1}",Directory.GetCurrentDirectory(),runDateTime);
+
+            var dataFilePath = ConfigurationManager.AppSettings["DataFilePath"];
+            var dataDir = string.IsNullOrWhiteSpace(dataFilePath) ? Directory.GetCurrentDirectory() : dataFilePath;
+            var dirName = string.Format("{0}\\Log-{1}",dataDir,runDateTime);
+            
+
             if (!Directory.Exists(dirName))
             {
                 Directory.CreateDirectory(dirName);
             }
+            
             _errorLog = new Logging(string.Format("{0}\\Error.txt", dirName));
             _commentLog = new Logging(string.Format("{0}\\Status.txt", dirName));
             _valErrorLog = new Logging(string.Format("{0}\\ValidationError.txt", dirName));
@@ -54,7 +60,6 @@ namespace ValidationTool
             _fullLog = new Logging(string.Format("{0}\\FullLog.txt", dirName));
 
             _commonFields = new List<string>();
-            //_toCompareList = new List<int>();
             _itemTypesToValidate = new List<string>();
 
             _taskList = new List<Task>();
@@ -97,73 +102,7 @@ namespace ValidationTool
             return _tfsStore.GetWorkItem(id);
         }
 
-        public bool CompareCommonFields(WorkItem vsoItem, WorkItem tfsItem, StringBuilder sb)
-        {
-            var result = true;
-
-            foreach (var field in _commonFields)
-            {
-                if (field.Equals("HyperLinkCount", StringComparison.OrdinalIgnoreCase))
-                {
-                    var r = vsoItem.HyperLinkCount == tfsItem.HyperLinkCount;
-                    if (!r)
-                    {
-                        sb.AppendFormat(",{0}", field);
-                    }
-                    result &= r;
-                }
-                else if (field.Equals("Priority", StringComparison.OrdinalIgnoreCase))
-                {
-                    var r = vsoItem.Fields[field].Value == tfsItem.Fields[field].Value;
-                    if (!r)
-                    {
-                        sb.AppendFormat(",{0}", field);
-                    }
-                    result &= r;
-                }
-                else if (field.Equals("Attachments", StringComparison.OrdinalIgnoreCase))
-                {
-                    var r = vsoItem.Attachments.Count == tfsItem.Attachments.Count;
-                    if (!r)
-                    {
-                        sb.AppendFormat(",{0}", field);
-                    }
-                    result &= r;
-                }
-                else if (field.Equals("Title", StringComparison.OrdinalIgnoreCase))
-                {
-                    //var r = vsoItem.Fields[field].Value.Equals(tfsItem.Fields[field].Value);
-                    //if (!r)
-                    //{
-                    var r = IsNotCommaDifference(vsoItem.Fields[field].Value.ToString(),
-                        tfsItem.Fields[field].Value.ToString());
-                    if(!r)    
-                    {
-                            sb.AppendFormat(",{0}", field);
-                    }
-                    //    else
-                    //    {
-                    //        r = true;
-                    //    }
-                    //}
-                    result &= r;
-                }
-                else
-                {
-                    var r = vsoItem.Fields[field].Value.Equals(tfsItem.Fields[field].Value);
-                    if (!r)
-                    {
-                        sb.AppendFormat(",{0}", field);
-                    }
-                    result &= r;
-                }
-                
-            }
-
-            return result;
-        }
-
-        public void Start()
+        public void StartComparison()
         {
             var sw = Stopwatch.StartNew();
 
@@ -203,6 +142,7 @@ namespace ValidationTool
             _commentLog.Log(sb.ToString());
         }
 
+        
         public void Compare(string fileName)
         {
             var itemIds = GetItemIdsFromFile(fileName);
@@ -213,23 +153,20 @@ namespace ValidationTool
 
             foreach (var itemId in itemIds)
             {
+                int vsoItemId = -1;
+
                 try
                 {
                     var tfsItem = GetTfsWorkItem(itemId);
 
-                    
-
-                    //Console.WriteLine("Validate item id={0}, type={1}", tfsItem.Id, tfsItem.Type.Name);
-                    //_fullLog.Log("Validate item id={0}, type={1}", tfsItem.Id, tfsItem.Type.Name);
-
                     if (string.IsNullOrWhiteSpace(tfsItem.Fields["Mirrored TFS ID"].Value.ToString()))
                     {
                         _notMigratedItemCount++;
-                        _errorLog.Log("{0} {1}", tfsItem.Id, "NOT-MIGRATED");
+                        _errorLog.Log("{0} {1}", tfsItem.Id, "NOTMIGRATED");
                         continue;
                     }
 
-                    var vsoItemId = Convert.ToInt32(tfsItem.Fields["Mirrored TFS ID"].Value);
+                    vsoItemId = Convert.ToInt32(tfsItem.Fields["Mirrored TFS ID"].Value);
                     var vsoItem = GetVsoWorkItem(vsoItemId);
                     
                     if (vsoItem == null)
@@ -239,8 +176,8 @@ namespace ValidationTool
                         continue;
                     }
 
-                    Console.WriteLine("Validate TfsItem id={0}, VsoItemId={1}, type={2}", tfsItem.Id, vsoItem.Id, tfsItem.Type.Name);
-                    _fullLog.Log("Validate TfsItem id={0}, VsoItemId={1}, type={2}", tfsItem.Id, vsoItem.Id, tfsItem.Type.Name);
+                    Console.WriteLine("Compare TfsItem id={0}, VsoItemId={1}, type={2}", tfsItem.Id, vsoItem.Id, tfsItem.Type.Name);
+                    _fullLog.Log("Compare TfsItem id={0}, VsoItemId={1}, type={2}", tfsItem.Id, vsoItem.Id, tfsItem.Type.Name);
 
                     if (!string.IsNullOrWhiteSpace(vsoItem.Fields["Mirrored TFS ID"].Value.ToString()) 
                         && !vsoItem.Fields["Mirrored TFS ID"].Value.Equals(tfsItem.Id.ToString()))
@@ -257,16 +194,16 @@ namespace ValidationTool
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine("Exception: {0}", e.Message);
-                    _fullLog.Log("Exception: {0}", e.Message);
+                    Console.WriteLine("TfsItem={0}, VsoItem={1} Exception={2}", itemId, vsoItemId, e.Message);
+                    _fullLog.Log("TfsItem={0}, VsoItem={1} Exception={2}", itemId, vsoItemId, e.Message);
                     _exceptionItemCount++;
-                    _errorLog.Log("TfsItem={0}, Exception={1}", itemId, e.Message);
+                    _errorLog.Log("TfsItem={0}, VsoItem={1} Exception={2}", itemId, vsoItemId, e.Message);
                 }
             }
             
         }
 
-        public bool CompareItems(WorkItem vsoItem, WorkItem tfsItem)
+        private bool CompareItems(WorkItem vsoItem, WorkItem tfsItem)
         {
             var sb = new StringBuilder();
             sb.AppendFormat("{0};{1};{2}", vsoItem.Id, tfsItem.Id, vsoItem.Type.Name);
@@ -276,7 +213,7 @@ namespace ValidationTool
 
             if(_itemTypesToValidate.Find(s => s.IndexOf(itemType, StringComparison.OrdinalIgnoreCase) >= 0) != null)
             {
-                result &= CompareItem(vsoItem, tfsItem, itemType, sb);
+                result &= CompareItemSpecificFields(vsoItem, tfsItem, itemType, sb);
             }
 
             if (!result)
@@ -291,7 +228,78 @@ namespace ValidationTool
             return result;
         }
 
-        public bool CompareItem(WorkItem vsoItem, WorkItem tfsItem, string itemType, StringBuilder sb)
+        private bool CompareCommonFields(WorkItem vsoItem, WorkItem tfsItem, StringBuilder sb)
+        {
+            var result = true;
+
+            foreach (var field in _commonFields)
+            {
+                if (field.Equals("HyperLinkCount", StringComparison.OrdinalIgnoreCase))
+                {
+                    var r = vsoItem.HyperLinkCount == tfsItem.HyperLinkCount;
+                    if (!r)
+                    {
+                        sb.AppendFormat(",{0}", field);
+                    }
+                    result &= r;
+                }
+                else if (field.Equals("Priority", StringComparison.OrdinalIgnoreCase))
+                {
+                    var r = vsoItem.Fields[field].Value == tfsItem.Fields[field].Value;
+                    if (!r)
+                    {
+                        sb.AppendFormat(",{0}", field);
+                    }
+                    result &= r;
+                }
+                else if (field.Equals("Attachments", StringComparison.OrdinalIgnoreCase))
+                {
+                    var r = vsoItem.Attachments.Count == tfsItem.Attachments.Count;
+                    if (!r)
+                    {
+                        sb.AppendFormat(",{0}", field);
+                    }
+                    result &= r;
+                }
+                else if (field.Equals("Title", StringComparison.OrdinalIgnoreCase))
+                {
+                    var r = IsNotCommaDifference(vsoItem.Fields[field].Value.ToString(),
+                        tfsItem.Fields[field].Value.ToString());
+
+                    if (!r)
+                    {
+                        sb.AppendFormat(",{0}", field);
+                    }
+
+                    result &= r;
+                }
+                else if (field.Equals("Created Date", StringComparison.OrdinalIgnoreCase))
+                {
+                    var r = DateTime.Compare(vsoItem.CreatedDate, tfsItem.CreatedDate) == 0;
+
+                    if (!r)
+                    {
+                        sb.AppendFormat(",{0}", field);
+                    }
+
+                    result &= r;
+                }
+                else
+                {
+                    var r = vsoItem.Fields[field].Value.Equals(tfsItem.Fields[field].Value);
+                    if (!r)
+                    {
+                        sb.AppendFormat(",{0}", field);
+                    }
+                    result &= r;
+                }
+
+            }
+
+            return result;
+        }
+
+        private bool CompareItemSpecificFields(WorkItem vsoItem, WorkItem tfsItem, string itemType, StringBuilder sb)
         {
             var item = ConfigurationManager.AppSettings[itemType];
             if (string.IsNullOrWhiteSpace(item))
@@ -304,9 +312,7 @@ namespace ValidationTool
 
             foreach (var itemField in itemFields)
             {
-                if (//itemField.Equals("Description", StringComparison.OrdinalIgnoreCase)
-                    //|| itemField.Equals("Repro Steps", StringComparison.OrdinalIgnoreCase)
-                     itemField.Equals("Source Branch", StringComparison.OrdinalIgnoreCase)
+                if (itemField.Equals("Source Branch", StringComparison.OrdinalIgnoreCase)
                     || itemField.Equals("Target Branch", StringComparison.OrdinalIgnoreCase))
                 {
                     var r = vsoItem.Fields[itemField].Value.Equals(tfsItem.Fields[itemField].Value);
@@ -319,11 +325,9 @@ namespace ValidationTool
                 }
                 else if (itemField.Equals("Description", StringComparison.OrdinalIgnoreCase))
                 {
-                    //var r = vsoItem.Fields[itemField].Value.Equals(tfsItem.Fields[itemField].Value);
-                    //if (!r)
-                    //{
                     var r = IsNotCommaDifference(vsoItem.Fields[itemField].Value.ToString(),
                         tfsItem.Fields[itemField].Value.ToString());
+                    
                     if(!r)
                         {
                             sb.AppendFormat(",{0}", itemField);
@@ -333,20 +337,14 @@ namespace ValidationTool
                 }
                 else if (itemField.Equals("Repro Steps", StringComparison.OrdinalIgnoreCase))
                 {
-                    //var r = vsoItem.Fields[itemField].Value.Equals(tfsItem.Fields[itemField].Value);
-                    //if (!r)
-                    //{
                     var r = IsNotCommaDifference(vsoItem.Fields[itemField].Value.ToString(),
                         tfsItem.Fields[itemField].Value.ToString());
+                    
                     if(!r)
                         {
                             sb.AppendFormat(",{0}", itemField);
                         }
-                    //    else
-                    //    {
-                    //        r = true;
-                    //    }
-                    //}
+                    
                     result &= r;
                 }
                 else if (itemField.Equals("Priority", StringComparison.OrdinalIgnoreCase))
@@ -363,12 +361,25 @@ namespace ValidationTool
             return result;
         }
 
-        public bool RevisionAfterMigration(WorkItem tfsItem)
+        private bool CompareTags(WorkItem vsoItem, WorkItem tfsItem)
+        {
+            if (string.IsNullOrWhiteSpace(vsoItem.Tags) && string.IsNullOrWhiteSpace(tfsItem.Tags))
+            {
+                return true;
+            }
+
+            var vsoTagList = CreateTagList(vsoItem.Tags);
+            var tfsTagList = CreateTagList(tfsItem.Tags);
+
+            var l = tfsTagList.Except(vsoTagList);
+
+            return l.Any();
+        }
+
+        private bool RevisionAfterMigration(WorkItem tfsItem)
         {
             var revisions = tfsItem.Revisions;
             int migCount = 0;
-
-            bool result = false;
 
             for (int i = revisions.Count -1; i >- 0; i--)
             {
@@ -383,19 +394,22 @@ namespace ValidationTool
 
             if (migCount == revisions.Count - 1) return false;
 
+            var result = false;
+
             for (int i = migCount + 1; i <revisions.Count ; i++)
             {
-                var hist = revisions[i].Fields["History"].Value;
-                if (hist != null && !string.IsNullOrWhiteSpace(hist.ToString()))
+                var changedBy = revisions[i].Fields["Changed By"].Value.ToString();
+                if (!(changedBy.IndexOf("vs bld lab", StringComparison.OrdinalIgnoreCase) >= 0))
                 {
-                    return true;
+                    result = true;
+                    break;
                 }
             }
 
-            return false;
+            return result;
         }
 
-        public bool IsNotCommaDifference(string s1, string s2)
+        private bool IsNotCommaDifference(string s1, string s2)
         {
             string regex = @"(<.+?>|&nbsp;|&#160;)";
             var x1 = Regex.Replace(s1, regex, "").Trim();
@@ -418,6 +432,25 @@ namespace ValidationTool
             }
 
             return isComma;
+        }
+
+        private IEnumerable<string> CreateTagList(string tags)
+        {
+            var tokens = tags.Split(';');
+            List<string> tagList = new List<string>();
+            foreach (var token in tokens)
+            {
+                if (!token.Trim().Equals("Test Migrated To DevDiv-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Test Test Migrated To DevDiv-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Test Migrated To DevDev-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Migrated To DevDiv-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Migrated To DevDiv VSO", StringComparison.OrdinalIgnoreCase))
+                {
+                    tagList.Add(token);
+                }
+            }
+
+            return tagList;
         }
     }
 }

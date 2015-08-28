@@ -1,10 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Microsoft.TeamFoundation.Client;
-using System.Configuration;
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.TeamFoundation.WorkItemTracking.Client;
 
 namespace ValidationTool
@@ -13,86 +10,96 @@ namespace ValidationTool
     {
         static void Main(string[] args)
         {
+            var val = new Validation();
+            //val.StartComparison();
 
-            //var tfsItem = GetTfsWorkItem(1054115);
-            //var vsoItem = GetVsoWorkItem(Convert.ToInt32(tfsItem.Fields["Mirrored TFS ID"].Value));
-            //Compare(vsoItem, tfsItem);
+            //var itemIds = val.GetItemIdsFromFile(@"G:\sharedstuff\Tools\VSO_ValidationTool\Run-8-27\ItemIDs-1.dat");
 
-            Validation val = new Validation();
-            val.Start();
-
-        }
-
-        static WorkItem GetVsoWorkItem(int id)
-        {
-            var vsoServerUri = new Uri(ConfigurationManager.AppSettings["VsoServer"]);
-            var vsoServer = TfsTeamProjectCollectionFactory.GetTeamProjectCollection(vsoServerUri);
-            var store = vsoServer.GetService<WorkItemStore>();
-            var project = store.Projects["DevDiv"];
-
-            return store.GetWorkItem(id);
-        }
-
-        static WorkItem GetTfsWorkItem(int id)
-        {
-            var tfsServerUrl = ConfigurationManager.AppSettings["TfsServer"];
-            var tfsServerUri = new Uri(tfsServerUrl);
-            var tfsServer = TfsTeamProjectCollectionFactory.GetTeamProjectCollection(tfsServerUri);
-            var store = tfsServer.GetService<WorkItemStore>();
-            var project = store.Projects["DevDiv"];
-
-            return store.GetWorkItem(id);
-        }
-
-        static bool Compare(WorkItem vsoItem, WorkItem tfsItem)
-        {
-            bool result;
-
-            // Compare title
-            result = string.Equals(vsoItem.Title, tfsItem.Title);
-            Console.WriteLine("Title={0}", result);
-
-            // Compare area path
-            result = string.Equals(vsoItem.AreaPath, tfsItem.AreaPath);
-            Console.WriteLine("AreaPath={0}", result);
-
-            // Compare iteration path
-            result = string.Equals(vsoItem.IterationPath, tfsItem.IterationPath);
-            Console.WriteLine("IterationPath={0}", result);
-
-            // Compare hyperlinkcount
-            result = vsoItem.HyperLinkCount == tfsItem.HyperLinkCount;
-           Console.WriteLine("HyperLinkCount={0}", result);
-
-            // Revision count
-            result = vsoItem.Revisions.Count == tfsItem.Revisions.Count;
-            Console.WriteLine("Vso Revisions [{0}], Tfs Revisions [{1}]", vsoItem.Revisions.Count, tfsItem.Revisions.Count);
-
-            // Revision count
-            result = vsoItem.Links.Count == tfsItem.Links.Count;
-            Console.WriteLine("Vso Links [{0}], Tfs Links [{1}]", vsoItem.Links.Count, tfsItem.Links.Count);
-
-            //Console.WriteLine("VSO Item Revisions");
-            //foreach (Revision rev in tfsItem.Revisions)
+            //foreach (var itemId in itemIds)
             //{
-            //    foreach (Field field in tfsItem.Fields)
+            //    var tfsItem = val.GetTfsWorkItem(itemId);
+
+            //    if (tfsItem != null && !string.IsNullOrWhiteSpace(tfsItem.Tags))
             //    {
-            //        Console.WriteLine(rev.Fields[field.Name].Value);
+            //        Console.WriteLine("{0} {1}", tfsItem.Id, tfsItem.Tags.ToString());
             //    }
             //}
 
-            //result = vsoItem.Fields["Repro Steps"].Value.Equals(tfsItem.Fields["Repro Steps"].Value);
-            //Console.WriteLine("Repro Steps={0}",result);
+            var tfsItem = val.GetTfsWorkItem(1053543);
+            //var tfsItemTagList = tfsItem.Tags.Split(';').ToList();
 
-            //Console.WriteLine(tfsItem.Fields["History"].Value);
+            var vsoItemTag =
+                "CordovaPluginRequest; Scenario: MDD; Severity: Pain Point; Source: External Customer; Stream: Interview; Usage: Hypothetical; Test Migrated To DevDiv-Test; Migrated To DevDiv-Test";
 
-            //foreach (Field field in tfsItem.Fields)
-            //{
-            //    //if(field.Name.Contains("History"))
-            //    Console.WriteLine(field.Name);
-            //}
+            var tfsTagList = CreateTagList(tfsItem.Tags);
+            var vsoTagList = CreateTagList(vsoItemTag);
 
-            return result;
+            var l = tfsTagList.Except(vsoTagList);
+
+            Console.WriteLine(""); 
+
+
         }
+
+        static IEnumerable<string> CreateTagList(string tags)
+        {
+            var tokens = tags.Split(';');
+            List<string> tagList = new List<string>();
+            foreach (var token in tokens)
+            {
+                if (!token.Trim().Equals("Test Migrated To DevDiv-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Test Test Migrated To DevDiv-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Test Migrated To DevDev-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Migrated To DevDiv-Test", StringComparison.OrdinalIgnoreCase)
+                    && !token.Trim().Equals("Migrated To DevDiv VSO", StringComparison.OrdinalIgnoreCase))
+                {
+                    tagList.Add(token);
+                }
+            }
+
+            return tagList;
+        }
+
+        //static bool RevisionAfterMigration(WorkItem tfsItem)
+        //{
+        //    var revisions = tfsItem.Revisions;
+        //    int migCount = 0;
+
+        //    bool result = false;
+
+        //    for (int i = revisions.Count - 1; i > -0; i--)
+        //    {
+        //        var hist = revisions[i].Fields["History"].Value;
+        //        if (hist != null &&
+        //            hist.ToString().IndexOf("Test migration to", StringComparison.OrdinalIgnoreCase) >= 0)
+        //        {
+        //            migCount = i;
+        //            break;
+        //        }
+        //    }
+
+        //    if (migCount == revisions.Count - 1) return false;
+
+        //    for (int i = migCount+1; i < revisions.Count; i++)
+        //    {
+        //        //var hist = revisions[i].Fields["History"].Value;
+        //        //if (hist != null && !string.IsNullOrWhiteSpace(hist.ToString()))
+        //        //{
+        //        //    return true;
+        //        //}
+        //        Console.WriteLine("++++++++++++++++++++++++++++++");
+        //        Console.WriteLine("Revision Num = {0}", i);
+        //        Console.WriteLine("++++++++++++++++++++++++++++++");
+        //        Console.WriteLine(revisions[i].Fields["Changed By"].Value);
+        //        if(!(revisions[i].Fields["Changed By"].Value.ToString().IndexOf("vs bld lab", StringComparison.OrdinalIgnoreCase) >= 0))
+        //        {
+        //            result = true;
+        //            break;
+        //        }
+
+        //    }
+
+        //    return result;
+        //}
     }
 }
