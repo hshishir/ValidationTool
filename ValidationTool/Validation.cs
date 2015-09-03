@@ -13,20 +13,29 @@ namespace ValidationTool
 {
     public class Validation
     {
+        public enum Action 
+        {
+            Compare,
+            Validate
+        }
+
         private TfsTeamProjectCollection _tfsServer;
         private TfsTeamProjectCollection _vsoServer;
         private WorkItemStore _vsoStore;
         private WorkItemStore _tfsStore;
         private List<string> _commonFields;
-       
+        private Action _action;
+
         // logs
         private Logging _errorLog;
-        private Logging _commentLog;
+        private Logging _statusLog;
         private Logging _exceptionLog;
         private Logging _valFieldErrorLog;
         private Logging _valTagErrorLog;
         private Logging _valPostMigrationUpdateLog;
         private Logging _fullLog;
+
+        private Logging _imageLog;
         
         private List<Task> _taskList;
 
@@ -39,6 +48,9 @@ namespace ValidationTool
         private int _notMigratedItemCount;
         private int _misMatchedItemCount;
         private int _exceptionItemCount;
+        private int _valFailureCount;
+
+        private int _itemWithImageCount;
 
         public Validation()
         {
@@ -47,6 +59,16 @@ namespace ValidationTool
             _vsoStore = _vsoServer.GetService<WorkItemStore>();
             _tfsStore = _tfsServer.GetService<WorkItemStore>();
 
+            var actionValue = ConfigurationManager.AppSettings["Action"];
+            if (actionValue.Equals("validate", StringComparison.OrdinalIgnoreCase))
+            {
+                _action = Action.Validate;
+            }
+            else
+            {
+                _action = Action.Compare;
+            }
+            
             var runDateTime = DateTime.Now.ToString("yyyy-MM-dd-HHmmss");
 
             var dataFilePath = ConfigurationManager.AppSettings["DataFilePath"];
@@ -60,18 +82,24 @@ namespace ValidationTool
             }
             
             _errorLog = new Logging(string.Format("{0}\\Error.txt", dirName));
-            _commentLog = new Logging(string.Format("{0}\\Status.txt", dirName));
+            _statusLog = new Logging(string.Format("{0}\\Status.txt", dirName));
+            _fullLog = new Logging(string.Format("{0}\\FullLog.txt", dirName));
+
+            _taskList = new List<Task>();
+
+            if (!_action.Equals(Action.Compare))
+            {
+                return;
+            }
+
             _valFieldErrorLog = new Logging(string.Format("{0}\\FieldError.txt", dirName));
             _valTagErrorLog = new Logging(string.Format("{0}\\TagError.txt", dirName));
             _valPostMigrationUpdateLog = new Logging(string.Format("{0}\\PostMigrationUpdate.txt", dirName));
 
-
-            _fullLog = new Logging(string.Format("{0}\\FullLog.txt", dirName));
+            _imageLog = new Logging(string.Format("{0}\\ItemsWithImage.txt", dirName));
 
             _commonFields = new List<string>();
             _itemTypesToValidate = new List<string>();
-
-            _taskList = new List<Task>();
 
             var fields = ConfigurationManager.AppSettings["CommonFields"].Split(',');
             foreach (var field in fields)
@@ -111,7 +139,7 @@ namespace ValidationTool
             return _tfsStore.GetWorkItem(id);
         }
 
-        public void StartComparison()
+        public void Start()
         {
             var sw = Stopwatch.StartNew();
 
@@ -127,7 +155,15 @@ namespace ValidationTool
                 {
                     Console.WriteLine("Starting task for {0}", fileName);
                     _fullLog.Log("Starting task for {0}", fileName);
-                    Compare(fileName);
+
+                    if (_action.Equals(Action.Compare))
+                    {
+                        Compare(fileName);
+                    }
+                    else
+                    {
+                        Validate(fileName);
+                    }
 
                 });
 
@@ -140,20 +176,108 @@ namespace ValidationTool
             var sb = new StringBuilder();
             sb.AppendLine(string.Format("\n\nMigrated item count: {0}", _migratedItemCount));
             sb.AppendLine(string.Format("Not migrated item count: {0}", _notMigratedItemCount));
-            sb.AppendLine(string.Format("Mis-matched item count: {0}", _misMatchedItemCount));
             sb.AppendLine(string.Format("Exception item count: {0}", _exceptionItemCount));
-            sb.AppendLine(string.Format("Field error count: {0}", _itemFailedFieldValidationCount));
-            sb.AppendLine(string.Format("Tag error count: {0}", _itemFailedTagValidationCount));
-            sb.AppendLine(string.Format("Post Migration update count: {0}", _itemPostMigrationUpdateCount));
-            
+
+            if (_action.Equals(Action.Validate))
+            {
+                sb.AppendLine(string.Format("Validation error count: {0}", _valFailureCount));
+            }
+
+            if (_action.Equals(Action.Compare))
+            {
+                sb.AppendLine(string.Format("Mis-matched item count: {0}", _misMatchedItemCount));
+                sb.AppendLine(string.Format("Field error count: {0}", _itemFailedFieldValidationCount));
+                sb.AppendLine(string.Format("Tag error count: {0}", _itemFailedTagValidationCount));
+                sb.AppendLine(string.Format("Post Migration update count: {0}", _itemPostMigrationUpdateCount));
+            }
+
             sb.AppendLine(String.Format("Total time: {0}", sw.Elapsed.TotalSeconds));
             
             Console.WriteLine(sb.ToString());
             _fullLog.Log(sb.ToString());
-            _commentLog.Log(sb.ToString());
+            _statusLog.Log(sb.ToString());
         }
 
-        
+        public void Validate(string fileName)
+        {
+            var itemIds = GetItemIdsFromFile(fileName);
+            var str = string.Format("Total items: {0}", itemIds.Count);
+            Console.WriteLine(str);
+            _fullLog.Log(str);
+            _migratedItemCount += itemIds.Count;
+
+            foreach (var itemId in itemIds)
+            {
+                int vsoItemId = -1;
+
+                try
+                {
+                    var tfsItem = GetTfsWorkItem(itemId);
+
+                    if (string.IsNullOrWhiteSpace(tfsItem.Fields["Mirrored TFS ID"].Value.ToString()))
+                    {
+                        _notMigratedItemCount++;
+                        _errorLog.Log("{0};{1}", tfsItem.Id, "NOTMIGRATED");
+                        continue;
+                    }
+
+                    vsoItemId = Convert.ToInt32(tfsItem.Fields["Mirrored TFS ID"].Value);
+                    var vsoItem = GetVsoWorkItem(vsoItemId);
+
+                    if (vsoItem == null)
+                    {
+                        _notMigratedItemCount++;
+                        _errorLog.Log("{0};{1};{2};{3}", tfsItem.Id, vsoItemId, tfsItem.Type.Name, "VSO ITEM NOT FOUND");
+                        continue;
+                    }
+
+                    Console.WriteLine("Validate TfsItem id={0}, VsoItemId={1}, type={2}", tfsItem.Id, vsoItem.Id,
+                        tfsItem.Type.Name);
+                    _fullLog.Log("Validate TfsItem id={0}, VsoItemId={1}, type={2}", tfsItem.Id, vsoItem.Id,
+                        tfsItem.Type.Name);
+
+
+                    var tfsFields = tfsItem.Validate();
+                    var vsoFields = vsoItem.Validate();
+
+                    var sb = new StringBuilder();
+
+                    var tfsRes = tfsFields.Count > 0;
+                    if (tfsRes)
+                    {
+                        sb.AppendFormat("TfsItem={0};", tfsItem.Id);
+                        foreach (Field tfsField in tfsFields)
+                        {
+                            sb.AppendFormat("{0} ", tfsField.Name);
+                        }
+                    }
+
+                    var vsoRes = vsoFields.Count > 0;
+                    if (vsoRes)
+                    {
+                        sb.AppendFormat("VsoItem={0};", vsoItem.Id);
+                        foreach (Field vsoField in vsoFields)
+                        {
+                            sb.AppendFormat("{0} ", vsoField.Name);
+                        }
+                    }
+
+                    if (vsoRes || tfsRes)
+                    {
+                        _errorLog.Log(sb.ToString());
+                        _valFailureCount++;
+                    }
+                }
+                catch(Exception e)
+                {
+                    Console.WriteLine("TfsItem={0}, VsoItem={1} Exception={2}", itemId, vsoItemId, e.Message);
+                    _fullLog.Log("TfsItem={0}, VsoItem={1} Exception={2}", itemId, vsoItemId, e.Message);
+                    _errorLog.Log("TfsItem={0}, VsoItem={1} Exception={2}", itemId, vsoItemId, e.Message);
+                    _exceptionItemCount++;
+                }
+            }
+        }
+
         public void Compare(string fileName)
         {
             var itemIds = GetItemIdsFromFile(fileName);
@@ -216,6 +340,15 @@ namespace ValidationTool
 
         private bool CompareItems(WorkItem vsoItem, WorkItem tfsItem)
         {
+             // Compare tags
+            var r = CompareTags(vsoItem, tfsItem);
+            if (!r)
+            {
+                var tagStr = string.Format("{0};{1};{2};{3}", tfsItem.Id, vsoItem.Id, vsoItem.Type.Name, "TAGSDONTMATCH");
+                _valTagErrorLog.Log(tagStr);
+                _itemFailedTagValidationCount++;
+            }
+
             var sb = new StringBuilder();
             sb.AppendFormat("{0};{1};{2};", tfsItem.Id, vsoItem.Id, vsoItem.Type.Name);
 
@@ -225,15 +358,6 @@ namespace ValidationTool
             if(_itemTypesToValidate.Find(s => s.IndexOf(itemType, StringComparison.OrdinalIgnoreCase) >= 0) != null)
             {
                 result &= CompareItemSpecificFields(vsoItem, tfsItem, itemType, sb);
-            }
-
-            // Compare tags
-            var r = CompareTags(vsoItem, tfsItem);
-            if (!r)
-            {
-                sb.AppendFormat(";{0}", "TAGSDONTMATCH");
-                _valTagErrorLog.Log(sb.ToString());
-                _itemFailedTagValidationCount++;
             }
 
             result &= r;
@@ -293,7 +417,7 @@ namespace ValidationTool
                 }
                 else if (field.Equals("Title", StringComparison.OrdinalIgnoreCase))
                 {
-                    var r = IsNotCommaDifference(vsoItem.Fields[field].Value.ToString(),
+                    var r = CompareContent(vsoItem.Fields[field].Value.ToString(),
                         tfsItem.Fields[field].Value.ToString());
 
                     if (!r)
@@ -369,7 +493,7 @@ namespace ValidationTool
                 }
                 else if (itemField.Equals("Description", StringComparison.OrdinalIgnoreCase))
                 {
-                    var r = IsNotCommaDifference(vsoItem.Fields[itemField].Value.ToString(),
+                    var r = CompareContent(vsoItem.Fields[itemField].Value.ToString(),
                         tfsItem.Fields[itemField].Value.ToString());
                     
                     if(!r)
@@ -378,10 +502,17 @@ namespace ValidationTool
                         }
                         
                         result &= r;
+
+                    if (MissingImageInContent(vsoItem.Fields[itemField].Value.ToString(),
+                        tfsItem.Fields[itemField].Value.ToString()))
+                    {
+                        _imageLog.Log(string.Format("{0};{1};{2};{3}", tfsItem.Id, vsoItem.Id, itemType, itemField));
+                    }
+
                 }
                 else if (itemField.Equals("Repro Steps", StringComparison.OrdinalIgnoreCase))
                 {
-                    var r = IsNotCommaDifference(vsoItem.Fields[itemField].Value.ToString(),
+                    var r = CompareContent(vsoItem.Fields[itemField].Value.ToString(),
                         tfsItem.Fields[itemField].Value.ToString());
                     
                     if(!r)
@@ -390,6 +521,12 @@ namespace ValidationTool
                         }
                     
                     result &= r;
+
+                    if (MissingImageInContent(vsoItem.Fields[itemField].Value.ToString(),
+                        tfsItem.Fields[itemField].Value.ToString()))
+                    {
+                        _imageLog.Log(string.Format("{0};{1};{2};{3}", tfsItem.Id, vsoItem.Id, itemType, itemField));
+                    }
                 }
                 else if (itemField.Equals("Priority", StringComparison.OrdinalIgnoreCase))
                 {
@@ -451,22 +588,44 @@ namespace ValidationTool
             return result;
         }
 
-        private bool IsNotCommaDifference(string s1, string s2)
+        private bool CompareContent(string vsoValue, string tfsValue)
         {
-            string regex = @"(<.+?>|&nbsp;|&#160;)";
-            var x1 = Regex.Replace(s1, regex, "").Trim();
-            var x2 = Regex.Replace(s2, regex, "").Trim();
+            string regex = @"(<.+?>|&nbsp;|&#160;|&#39;|&amp;)";
+            var x1 = Regex.Replace(vsoValue, regex, "").Trim();
+            var x2 = Regex.Replace(tfsValue, regex, "").Trim();
 
-            x1 = x1.Replace("\n", "").Replace("\t", "");
-            x2 = x2.Replace("\n", "").Replace("\t", "");
+            x1 = x1.Replace("\n", "").Replace("\t", "").Replace("'","");
+            x2 = x2.Replace("\n", "").Replace("\t", "").Replace("'", "");
 
-            if ((x1.StartsWith("From: ", StringComparison.OrdinalIgnoreCase)) &&
-                x2.StartsWith("From: ", StringComparison.OrdinalIgnoreCase))
+            // Ignore if email content
+            if (IsEmail(x1) && IsEmail(x2))
             {
                 return true;
             }
 
             return x1.Equals(x2);
+        }
+
+        private bool MissingImageInContent(string vsoValue, string tfsValue)
+        {
+            var regEx = new Regex("</? *img[^>]*>");
+            var vsoCount = regEx.Matches(vsoValue).Count;
+            var tfsCount = regEx.Matches(tfsValue).Count;
+
+            // No image
+            if (vsoCount == 0 && tfsCount == 0) return false;
+
+            return vsoCount != tfsCount;
+        }
+
+        private bool IsEmail(string str)
+        {
+            var regExFrom = new Regex("(From: [A-Z])\\w+");
+            var matchFrom = regExFrom.Match(str);
+            var regExTo = new Regex("(To: [A-Z])\\w+");
+            var matchTo = regExTo.Match(str);
+
+            return matchFrom.Success && matchTo.Success;
         }
 
         private HashSet<string> CreateTagList(string tags)

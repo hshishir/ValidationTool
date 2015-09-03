@@ -9,9 +9,9 @@ namespace ValidationTool
         static void Main(string[] args)
         {
             var val = new Validation();
-            val.StartComparison();
+            val.Start();
 
-            //Split(@"G:\sharedstuff\Tools\VSO_ValidationTool\E2EMigrated-AllParts.txt", 7000);
+            //Split(@"G:\sharedstuff\Tools\VSO_ValidationTool\Runs\Compare\Run-9-2\MigratedItemIDs.txt", 8000);
 
         }
 
